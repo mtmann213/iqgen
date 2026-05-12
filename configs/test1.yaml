@@ -1,0 +1,27 @@
+signal:
+  name: test
+  center_frequency_hz: 915000000.0
+  sample_rate: 1000000.0
+  normalization: peak
+  output_dir: ./output
+  timestamp: true
+  timestamp_format: '%Y%m%d_%H%M%S'
+source:
+  type: bitstring
+  bits: '10101111000010101010111100001010101011110000101010101111000010101010111100001010101011110000101010101111000010101010111100001010'
+modulation:
+  type: qpsk
+  gray_coding: true
+  initial_phase: 0.0
+rate:
+  bitrate: 1000.0
+pulse_shaping:
+  filter_type: none
+  span_symbols: 10
+  roll_off: 0.35
+  bt_product: 0.35
+output:
+  format: cf32
+  sigmf:
+    hardware: iqgen synthetic
+    recorder: iqgen

@@ -1,0 +1,31 @@
+# Generated signal output (per-run data files + plot PNGs)
+output/
+smoke_output/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Local Claude Code settings (machine-specific permissions)
+.claude/

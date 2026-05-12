@@ -1,0 +1,100 @@
+# =============================================================================
+# iqgen — IQ signal generation configuration
+# All available options are listed; commented options use the default shown.
+# =============================================================================
+
+signal:
+  name: test                          # identifier; appears in output filename
+  center_frequency_hz: 915e6          # nominal RF center frequency in Hz
+  sample_rate: 8e3                    # samples per second (Hz).
+                                      #   NOTE: may be auto-bumped upward so that
+                                      #   samples_per_symbol = sample_rate/symbol_rate
+                                      #   is an integer (and even, for OQPSK).
+                                      #   A WARNING is logged when this happens.
+  normalization: peak                 # peak | rms | none   (default: peak)
+                                      #   peak: max |sample| = 1.0
+                                      #   rms : sqrt(mean(|sample|^2)) = 1.0
+  output_dir: ./output                # directory for written files
+  timestamp: true                     # prepend timestamp to filename
+  timestamp_format: "%Y%m%d_%H%M%S"   # strftime format (UTC)
+
+# ----- Data source: exactly one type ----------------------------------------
+source:
+  type: bitstring                        # random | file | bitstring
+
+  # type=random:
+  # bit_count: 10000                    # number of bits to generate
+  # duration_sec: 1.0                 # alternative to bit_count; overrides it
+  # seed: 42                          # optional, for reproducible bits
+
+  # type=file:
+  # input_file: ./bits.bin            # packed-bit binary file
+  # bit_order: msb_first              # msb_first | lsb_first
+
+  # type=bitstring:
+  bits: "1010111100001010"       # only 0/1 chars; whitespace ignored
+
+# ----- Modulation -----------------------------------------------------------
+modulation:
+  type: bpsk                          # bpsk | dbpsk | qpsk | dqpsk |
+                                      # pi4_qpsk | oqpsk |
+                                      # 8psk | d8psk | pi4_8psk
+  gray_coding: true                   # Gray-coded constellation mapping
+  initial_phase: 0.0                  # radians; used by differential variants
+
+# ----- Rate (interconnected) -------------------------------------------------
+rate:
+  bitrate: 1000                       # bits/sec — SOURCE OF TRUTH
+  # symbol_rate:        <derived>     # = bitrate / bits_per_symbol  (do not set)
+  # samples_per_symbol: <derived>     # = sample_rate / symbol_rate  (do not set)
+                                      # Setting either above logs a warning and
+                                      # is overridden by the derived value.
+
+# ----- Pulse shaping (uses samples_per_symbol) ------------------------------
+pulse_shaping:
+  filter_type: none                   # none | root_raised_cosine | raised_cosine
+                                      #   | gaussian | rectangular
+  span_symbols: 10                    # filter span in symbols (default 10)
+  roll_off: 0.35                      # RRC / RC excess bandwidth (default 0.35)
+  bt_product: 0.35                    # Gaussian BT product (default 0.35)
+  # num_taps: <derived>               # = span_symbols * samples_per_symbol + 1
+
+# ----- Multi-frequency (OPTIONAL) -------------------------------------------
+# Omit this entire block to produce a plain single-carrier signal at offset 0.
+# When present, the baseband signal is mixed to each listed offset.
+#
+# Bandwidth check: for every offset f, |f| + bandwidth_single_sided must be
+# ≤ sample_rate / 2, where bandwidth_single_sided is symbol_rate*(1+roll_off)/2
+# for RRC/RC and symbol_rate otherwise. An error is raised (with the minimum
+# required sample_rate) if this is violated.
+#
+# channels:
+#   mode: concurrent              # concurrent | hopping
+#                                 #   concurrent: all offsets transmit at once
+#                                 #               (FDM); sum is renormalized.
+#                                 #   hopping:    cycle round-robin through
+#                                 #               offsets; phase resets at
+#                                 #               each hop boundary.
+#   offsets_hz: [-100e3, 100e3]   # baseband offsets relative to center.
+#                                 # SigMF center_frequency_hz is metadata only;
+#                                 # the actual carriers in the file sit at
+#                                 # these offsets.
+#   # hop_duration_sec: 0.01      # REQUIRED when mode=hopping; seconds per hop.
+
+# ----- Output ---------------------------------------------------------------
+output:
+  format: sigmf                       # cf32 | sigmf
+
+  # All sigmf:* keys below are OPTIONAL. iqgen always writes the SigMF core
+  # required fields (datatype, sample_rate, version, num_channels, datetime
+  # in the global object; sample_start/frequency/datetime in captures).
+  sigmf:
+    author: ""                        # core:author
+    description: ""                   # core:description (free-form)
+    license: ""                       # core:license
+    hardware: "iqgen synthetic"       # core:hardware
+    recorder: "iqgen"                 # core:recorder
+    # version: ""                     # core:version of the recording (free-form)
+    comment: ""                       # placed in the annotation's core:description
+    # global_extra:                   # any additional global-object keys, e.g.:
+    #   "myext:project": "demo"       #   custom extension namespaces
