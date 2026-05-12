@@ -48,8 +48,9 @@ def _fmt_num(x) -> str:
     return repr(f)
 
 
-MODULATIONS = ["bpsk", "dbpsk", "qpsk", "dqpsk", "pi4_qpsk",
-               "oqpsk", "8psk", "d8psk", "pi4_8psk"]
+MODULATIONS = ["bpsk", "dbpsk", "pi2_bpsk",
+               "qpsk", "dqpsk", "pi4_qpsk", "oqpsk",
+               "8psk", "d8psk", "pi4_8psk"]
 FILTERS = ["none", "root_raised_cosine", "raised_cosine",
            "gaussian", "rectangular"]
 NORMALIZATIONS = ["peak", "rms", "none"]
@@ -235,10 +236,12 @@ T = {
     ),
 
     "modulation": (
-        "Bits/symbol — BPSK/DBPSK: 1, QPSK/DQPSK/π4-QPSK/OQPSK: 2, "
-        "8PSK/D8PSK/π4-8PSK: 3.\n"
+        "Bits/symbol — BPSK/DBPSK/π2-BPSK: 1, "
+        "QPSK/DQPSK/π4-QPSK/OQPSK: 2, 8PSK/D8PSK/π4-8PSK: 3.\n"
         "Differential variants encode each symbol as a rotation from the "
         "previous output (no absolute phase reference required).\n"
+        "π/2-BPSK rotates every other symbol by π/2 (5G NR low-PAPR mode); "
+        "no 180° transitions through the origin.\n"
         "OQPSK delays the Q channel by half a symbol; requires even sps."
     ),
     "gray_coding": (

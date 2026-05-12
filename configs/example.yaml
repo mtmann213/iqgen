@@ -36,8 +36,8 @@ source:
 
 # ----- Modulation -----------------------------------------------------------
 modulation:
-  type: bpsk                          # bpsk | dbpsk | qpsk | dqpsk |
-                                      # pi4_qpsk | oqpsk |
+  type: bpsk                          # bpsk | dbpsk | pi2_bpsk |
+                                      # qpsk | dqpsk | pi4_qpsk | oqpsk |
                                       # 8psk | d8psk | pi4_8psk
   gray_coding: true                   # Gray-coded constellation mapping
   initial_phase: 0.0                  # radians; used by differential variants

@@ -145,6 +145,23 @@ class Pi4PSK8Mapper(ModulationMapper):
         return (symbols * rotation).astype(np.complex64)
 
 
+class Pi2BPSKMapper(ModulationMapper):
+    """π/2-BPSK (used in 5G NR uplink low-PAPR mode). Each successive symbol
+    is rotated by an additional π/2, so even-indexed symbols sit on the real
+    axis (±1) and odd-indexed on the imaginary axis (±j). This eliminates
+    180° transitions and roughly halves the PAPR of plain BPSK.
+    """
+    bits_per_symbol = 1
+
+    def map(self, bits):
+        base = np.where(bits == 0, 1.0 + 0.0j, -1.0 + 0.0j)
+        if base.size == 0:
+            return base.astype(np.complex64)
+        n = np.arange(base.size)
+        rotation = np.exp(1j * (np.pi / 2) * n)
+        return (base * rotation).astype(np.complex64)
+
+
 class OQPSKMapper(ModulationMapper):
     """Offset QPSK. Returns (I, Q) tuple so the generator can delay Q by half
     a symbol after upsampling. Uses the same Gray-coded constellation as QPSK.
@@ -167,6 +184,8 @@ def create_mapper(modulation: str, gray_coding: bool = True,
     m = modulation.lower()
     if m == "bpsk":
         return BPSKMapper()
+    if m == "pi2_bpsk":
+        return Pi2BPSKMapper()
     if m == "qpsk":
         return QPSKMapper(gray_coding=gray_coding)
     if m == "8psk":

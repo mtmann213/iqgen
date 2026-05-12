@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 
 BITS_PER_SYMBOL = {
-    "bpsk": 1, "dbpsk": 1,
+    "bpsk": 1, "dbpsk": 1, "pi2_bpsk": 1,
     "qpsk": 2, "dqpsk": 2, "pi4_qpsk": 2, "oqpsk": 2,
     "8psk": 3, "d8psk": 3, "pi4_8psk": 3,
 }

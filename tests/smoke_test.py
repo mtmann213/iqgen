@@ -24,8 +24,9 @@ from iqgen.generator import IQGenerator
 from iqgen.writers import Cf32Writer, SigMFWriter
 
 
-MODS = ["bpsk", "dbpsk", "qpsk", "dqpsk", "pi4_qpsk",
-        "oqpsk", "8psk", "d8psk", "pi4_8psk"]
+MODS = ["bpsk", "dbpsk", "pi2_bpsk",
+        "qpsk", "dqpsk", "pi4_qpsk", "oqpsk",
+        "8psk", "d8psk", "pi4_8psk"]
 FILTERS = ["none", "root_raised_cosine", "raised_cosine", "gaussian", "rectangular"]
 
 

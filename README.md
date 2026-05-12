@@ -6,8 +6,9 @@ with an optional Tkinter GUI for interactive use.
 
 ## Features
 
-- **9 modulations**: BPSK, DBPSK, QPSK, DQPSK, π/4-DQPSK, OQPSK, 8PSK, D8PSK,
-  π/4-8PSK. Gray coding and differential encoding supported where applicable.
+- **10 modulations**: BPSK, DBPSK, π/2-BPSK, QPSK, DQPSK, π/4-DQPSK, OQPSK,
+  8PSK, D8PSK, π/4-8PSK. Gray coding and differential encoding supported
+  where applicable.
 - **5 pulse-shaping filters**: none (NRZ sample-and-hold), root-raised-cosine,
   raised-cosine, Gaussian (BT product), rectangular.
 - **3 data sources**: random (with optional seed), file (packed bits,
