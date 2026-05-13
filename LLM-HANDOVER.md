@@ -6,18 +6,18 @@ that you can continue without re-deriving context.
 
 ## Current status
 
-**Working state.** All 172 smoke tests pass
+**Working state.** All 175 smoke tests pass
 (`python3 tests/smoke_test.py`). CLI and GUI both function end-to-end.
 
-Last completed feature: packet framing — `[preamble][syncword][FEC(header
-‖ payload ‖ CRC)]` layer with a frame-aware verifier and full diagnostic
-panel in the verifier GUI (sync offset/distance, header fields, FEC
-codewords + corrections + corrected positions, CRC computed vs expected,
-payload BER + first error positions).
+Last completed feature: channel / interference layer —
+`iqgen/channel.py` (AWGN / CW tone / IQ-file interferer mixed at a
+target SNR or SIR in dB, with truncate/tile/pad alignment), the
+`iqgen.evaluate` sweep CLI (CSV + BER waterfall PNG with FEC
+corrections and CRC outcomes), and an Interferer section in
+`verifier_gui.py` that runs each Verify through the channel and plots
+before/after constellations side-by-side.
 
-No known bugs. Likely next user request: a channel/interference layer
-(AWGN, tone, custom IQ file) at varying SNR/SIR with a BER sweep. See
-"If the user asks for…" below.
+No known bugs.
 
 ## Build history (phases)
 
@@ -49,7 +49,7 @@ it worked before moving on.
    mod/filter combo + multi-frequency. Lives in `verifier.py`,
    `verify_cli.py`, `verifier_gui.py`. 50 round-trip cases (generate →
    verify) are part of the smoke suite.
-8. **Packet framing** (most recent) — `iqgen/framing.py` adds CRC
+8. **Packet framing** — `iqgen/framing.py` adds CRC
    (CCITT-16, CRC-32), FEC (Hamming(7,4), repetition-3, none), and a
    `FrameConfig` driving `build_frame()` / `parse_frame()`. New `framed`
    source in `sources.py` wraps any payload source. Verifier exposes
@@ -59,6 +59,17 @@ it worked before moving on.
    and a multi-section diagnostic display. 12 framing smoke tests
    (all FEC×CRC combos at bit level + FEC-correctable error case +
    uncorrectable→CRC-detected case + modulated round-trip).
+9. **Channel / interference layer** (most recent) — `iqgen/channel.py`
+   exposes `mix(signal, interferer, target_db, mode='snr'|'sir', ...)`,
+   interferer constructors `awgn`/`tone`/`from_file`, alignment modes
+   `truncate`/`tile`/`pad`, and a `MixReport` with target vs achieved
+   dB. `iqgen/evaluate.py` sweeps the target dB and writes CSV + a BER
+   waterfall PNG (per-point payload BER, FEC corrections, CRC
+   outcome). `verifier_gui.py` got an Interferer LabelFrame and a
+   before/after constellation pair; the diagnostic text gains a
+   `[CHANNEL]` block. 3 channel smoke tests (AWGN SNR accuracy within
+   ±0.3 dB, tone SIR accuracy, AWGN+framing waterfall confirming clean
+   → FEC-engages → CRC-fails as SNR drops).
 
 ## Architecture
 
@@ -102,9 +113,24 @@ lives in its own module so they can be swapped/extended:
   inputs require the params via flags.
 - `verifier_gui.py` — Tkinter form mirroring the generator GUI's fields.
   Auto-fills from a chosen .sigmf-meta. Constellation plot of the
-  recovered (post-matched-filter) symbols after Verify. Left panel is
-  wrapped in a Canvas with a vertical scrollbar (the Framing section
-  adds height beyond the visible window).
+  recovered (post-matched-filter) symbols after Verify (single panel
+  by default, before/after side-by-side when an interferer is
+  applied). Left panel is wrapped in a Canvas with a vertical
+  scrollbar (Framing + Interferer sections add height beyond the
+  visible window).
+- `channel.py` — payload-agnostic mix layer.
+  `mix(signal, interferer, target_db, mode='snr'|'sir', align=..., offset_samples=..., trim_samples=...)`
+  scales the interferer so `P_sig / P_int_applied == 10^(target_db/10)`
+  and returns the sum plus a `MixReport` (signal/interferer powers,
+  scale factor, achieved dB, alignment, n_samples). Constructors:
+  `awgn(n, rng)` returns unit-power complex Gaussian;
+  `tone(n, freq, fs, phase)` returns unit-power complex exponential;
+  `from_file(path)` loads cf32 or .sigmf-data.
+- `evaluate.py` — sweep CLI. Parses `start:stop:step` or
+  comma-separated dB lists, builds the interferer per point, calls
+  `demodulate_frame` (or `demodulate` if `--framing` is off), and
+  writes CSV + a BER waterfall PNG (matplotlib Agg). Reuses
+  `verify_cli`'s parameter-resolution helpers for cf32/SigMF inputs.
 - `framing.py` — packet framing. On the TX side: `build_frame(payload,
   FrameConfig)` produces `[preamble][syncword][FEC(header‖payload‖CRC)]`.
   On the RX side: `parse_frame(bits, FrameConfig)` returns a
@@ -208,7 +234,7 @@ lives in its own module so they can be swapped/extended:
 
 ## Tests
 
-`tests/smoke_test.py` (172 cases):
+`tests/smoke_test.py` (175 cases):
 
 - 10 modulations × 5 filters × 2 formats = 100 cases
 - Edge cases (~10): bitstring/file/duration sources, sample-rate
@@ -220,6 +246,9 @@ lives in its own module so they can be swapped/extended:
   Hamming 1-bit FEC-correctable + Hamming 2-bit-in-codeword
   uncorrectable (must trip CRC) + a modulated end-to-end framed
   round-trip (QPSK + RRC + Hamming + CRC-16).
+- Channel (3 cases): AWGN SNR accuracy (±0.3 dB across +20/+10/0/-10),
+  tone SIR accuracy, AWGN+framing waterfall (clean at high SNR →
+  FEC corrections appear mid SNR → CRC fails at low SNR).
 
 Run: `python3 tests/smoke_test.py`. Cleans up `smoke_output/` automatically.
 
@@ -279,23 +308,24 @@ assertion that confirms it raises.
 - **Real-time / streaming output**: current pipeline is batch-only.
   Would require restructuring `generate()` into a generator that yields
   blocks.
-- **Channel / interference simulation** (likely next request): the user
-  has already sketched it. Plan was: new `iqgen/channel.py` exposing
-  `mix(signal, interferer, target_db, mode='snr'|'sir', ...)` plus
-  interferer constructors (`awgn`, `tone`, `from_file`); new
-  `iqgen.evaluate` CLI that sweeps SNR and reports BER per point by
-  feeding mixed signals to the existing `demodulate`/`demodulate_frame`.
-  Keep `channel.py` payload-agnostic — it just mixes IQ. Framing
-  diagnostics naturally tell the story (sync still found? FEC
-  corrections climbing? CRC failures?).
+- **More interferer types** (chirp, multitone, modulated jammer):
+  add a constructor to `channel.py` alongside `awgn`/`tone`/`from_file`,
+  then extend `INTERFERER_TYPES` in `verifier_gui.py` and the
+  `--interferer` choices in `evaluate.py`. Keep them unit-power so
+  `mix()` does the scaling.
+- **Doppler / CFO / IQ imbalance**: orthogonal to the channel layer.
+  Add an `impairments:` block in YAML and a new pipeline stage in
+  `generator.py` between normalize and multi-freq mix (or apply on
+  the receive side after `load_iq` in the verifier — the user will
+  have an opinion on which side).
 - **More FEC schemes** (convolutional, Reed-Solomon, LDPC): add to
   `framing.py` following the Hamming(7,4) pattern. Each needs
   `fec_encode`, `fec_decode` (returning `FecDecodeResult`), and
   `fec_overhead_bits`. Update `FEC_OPTIONS` in `verifier_gui.py`.
-- **Frame on a noisy channel**: `parse_frame` already accepts
-  `max_sync_distance`. When the interference layer lands, expose this
-  knob in the GUI so the user can tune sync tolerance vs false-positive
-  rate.
+- **Frame on a noisy channel**: `parse_frame` accepts
+  `max_sync_distance`; the GUI exposes it under Framing. Tune up when
+  sweeping into low SNR or sync correlation will give up before the
+  preamble is recoverable.
 
 ## Environment
 

@@ -7,9 +7,13 @@ Workflow:
   1. Pick an IQ file (.cf32, .sigmf-meta, or .sigmf-data).
   2. If SigMF, parameters auto-populate from the metadata; with cf32, fill
      them in manually.
-  3. Paste expected bits (or load from a file) to get a BER report. Leave
-     blank to just see the recovered bits.
-  4. Click Verify. A constellation plot of the recovered symbols is drawn.
+  3. (Optional) Enable an interferer (AWGN / CW tone / IQ file) at a
+     target SNR/SIR in dB. Applied via channel.mix() before demod;
+     before/after constellations are plotted side-by-side.
+  4. (Optional) Enable framing to parse preamble/sync/header/FEC/CRC and
+     get per-layer diagnostics.
+  5. Paste expected bits (or load from a file) for a BER report.
+  6. Click Verify.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ if __package__ in (None, ""):
                                 find_sigmf_data_for_meta, load_iq,
                                 params_from_sigmf_meta, parse_bits)
     from iqgen.framing import FrameConfig
+    from iqgen import channel as ch
 else:
     from .config import BITS_PER_SYMBOL, VALID_FILTERS
     from .verifier import (ReceiveParams, compare_bits, demodulate,
@@ -40,6 +45,7 @@ else:
                             find_sigmf_data_for_meta, load_iq,
                             params_from_sigmf_meta, parse_bits)
     from .framing import FrameConfig
+    from . import channel as ch
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +54,8 @@ FILTERS = sorted(VALID_FILTERS)
 CHANNEL_MODES = ["concurrent", "hopping"]
 CRC_OPTIONS = ["none", "crc16-ccitt-false", "crc32"]
 FEC_OPTIONS = ["none", "repetition-3", "hamming-7-4"]
+INTERFERER_TYPES = ["awgn", "tone", "file"]
+ALIGN_MODES = ["truncate", "tile", "pad"]
 
 
 class VerifierGUI:
@@ -80,6 +88,16 @@ class VerifierGUI:
             "frame_fec": tk.StringVar(value="hamming-7-4"),
             "frame_max_sync_dist": tk.StringVar(value=""),
             "expected_is_payload": tk.BooleanVar(value=True),
+            # Interferer
+            "intf_enabled": tk.BooleanVar(value=False),
+            "intf_type": tk.StringVar(value="awgn"),
+            "intf_target_db": tk.StringVar(value="10"),
+            "intf_tone_freq_hz": tk.StringVar(value="0"),
+            "intf_tone_phase": tk.StringVar(value="0.0"),
+            "intf_file_path": tk.StringVar(value=""),
+            "intf_align": tk.StringVar(value="truncate"),
+            "intf_offset_samples": tk.StringVar(value="0"),
+            "intf_seed": tk.StringVar(value=""),
             "_status": tk.StringVar(value="Pick an IQ file to begin."),
         }
 
@@ -153,6 +171,28 @@ class VerifierGUI:
         self._entry(mf, 0, "Offsets (Hz, comma-sep)", self.v["offsets_hz"])
         self._combo(mf, 1, "Channel mode", self.v["channel_mode"], CHANNEL_MODES)
         self._entry(mf, 2, "Hop duration (s)", self.v["hop_duration_sec"])
+
+        # Interferer / channel
+        ic = ttk.LabelFrame(parent, text="Interferer (channel)", padding=6)
+        ic.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Checkbutton(ic, text="Apply interferer before demodulation",
+                         variable=self.v["intf_enabled"]).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        self._combo(ic, 1, "Type", self.v["intf_type"], INTERFERER_TYPES)
+        self._entry(ic, 2, "Target SNR/SIR (dB)", self.v["intf_target_db"])
+        self._entry(ic, 3, "Tone freq offset (Hz)", self.v["intf_tone_freq_hz"])
+        self._entry(ic, 4, "Tone phase (rad)", self.v["intf_tone_phase"])
+        ttk.Label(ic, text="File interferer").grid(
+            row=5, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(ic, textvariable=self.v["intf_file_path"]).grid(
+            row=5, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(ic, text="Browse…",
+                    command=self._browse_intf_file).grid(
+            row=5, column=2, padx=2, pady=2)
+        self._combo(ic, 6, "Alignment", self.v["intf_align"], ALIGN_MODES)
+        self._entry(ic, 7, "Offset (samples)", self.v["intf_offset_samples"])
+        self._entry(ic, 8, "AWGN seed (blank=random)", self.v["intf_seed"])
+        ic.grid_columnconfigure(1, weight=1)
 
         # Framing
         ff = ttk.LabelFrame(parent, text="Framing", padding=6)
@@ -238,6 +278,46 @@ class VerifierGUI:
             self.v["input_path"].set(p)
             if detect_format(p) in ("sigmf-meta", "sigmf-data"):
                 self._autofill()
+
+    def _browse_intf_file(self):
+        p = filedialog.askopenfilename(
+            title="Choose interferer IQ file",
+            filetypes=[("IQ files", "*.cf32 *.sigmf-data *.sigmf-meta"),
+                       ("All", "*")],
+        )
+        if p:
+            self.v["intf_file_path"].set(p)
+
+    def _apply_interferer(self, iq: np.ndarray, params: ReceiveParams):
+        """Returns (mixed_iq, mix_report) or (iq, None) if disabled."""
+        if not self.v["intf_enabled"].get():
+            return iq, None
+        kind = self.v["intf_type"].get()
+        target_db = float(self.v["intf_target_db"].get())
+        align = self.v["intf_align"].get() or "truncate"
+        offset = int(self.v["intf_offset_samples"].get() or "0")
+        if kind == "awgn":
+            seed_raw = self.v["intf_seed"].get().strip()
+            rng = (np.random.default_rng(int(seed_raw)) if seed_raw
+                   else np.random.default_rng())
+            interferer = ch.awgn(iq.size, rng)
+            mode = "snr"
+        elif kind == "tone":
+            freq = float(self.v["intf_tone_freq_hz"].get() or "0")
+            phase = float(self.v["intf_tone_phase"].get() or "0")
+            interferer = ch.tone(iq.size, freq, params.sample_rate, phase)
+            mode = "sir"
+        elif kind == "file":
+            path = self.v["intf_file_path"].get().strip()
+            if not path:
+                raise ValueError("File interferer selected but no path set.")
+            interferer = ch.from_file(path)
+            mode = "sir"
+        else:
+            raise ValueError(f"Unknown interferer type: {kind}")
+        mixed, rep = ch.mix(iq, interferer, target_db, mode=mode,
+                             align=align, offset_samples=offset)
+        return mixed, rep
 
     def _browse_expected(self):
         p = filedialog.askopenfilename(
@@ -356,7 +436,7 @@ class VerifierGUI:
     # ---------- actions ----------
     def verify(self):
         try:
-            iq = self._resolve_iq()
+            iq_clean = self._resolve_iq()
             params = self._build_params()
         except Exception as e:
             messagebox.showerror("Bad input", str(e))
@@ -365,6 +445,15 @@ class VerifierGUI:
             messagebox.showerror("Missing parameters",
                                   "Sample rate and bitrate are required.")
             return
+
+        try:
+            iq, mix_rep = self._apply_interferer(iq_clean, params)
+        except Exception as e:
+            messagebox.showerror("Interferer failed", str(e))
+            return
+        self._mix_report = mix_rep
+        self._iq_clean = iq_clean
+        self._iq_mixed = iq
 
         framing_on = bool(self.v["frame_enabled"].get())
         expected = self._get_expected()
@@ -393,30 +482,59 @@ class VerifierGUI:
 
         # Build the result panel text
         lines: list[str] = []
+        if mix_rep is not None:
+            lines.extend(self._format_channel_diagnostics(mix_rep))
+            lines.append("")
         if framing_on:
             lines.extend(self._format_frame_diagnostics(self._frame_report,
                                                          expected))
-            self._set_status_from_frame(self._frame_report)
+            self._set_status_from_frame(self._frame_report, mix_rep)
         else:
+            prefix = ""
+            if mix_rep is not None:
+                prefix = f"{mix_rep.mode.upper()} {mix_rep.achieved_db:+.1f}dB; "
             if expected is not None:
                 rep = compare_bits(recovered, expected)
                 lines.append(str(rep))
                 self.v["_status"].set(
-                    f"BER {rep.ber:.3e}" if rep.n_compared else "no comparison")
+                    f"{prefix}BER {rep.ber:.3e}"
+                    if rep.n_compared else f"{prefix}no comparison")
             else:
-                self.v["_status"].set(f"Recovered {recovered.size} bits")
+                self.v["_status"].set(
+                    f"{prefix}Recovered {recovered.size} bits")
             lines.append("")
             lines.append(f"Recovered bits ({recovered.size}):")
             lines.append("".join(str(int(b)) for b in recovered))
 
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", "\n".join(lines))
-        self._draw_constellation(iq, params, recovered)
+        self._draw_constellations(iq_clean, iq, params, mix_rep is not None)
 
-    def _set_status_from_frame(self, rep):
+    def _format_channel_diagnostics(self, rep) -> list[str]:
+        L = []
+        L.append("=" * 60)
+        L.append("CHANNEL DIAGNOSTICS")
+        L.append("=" * 60)
+        L.append(f"[CHANNEL: {self.v['intf_type'].get()}]")
+        L.append(f"  target {rep.mode.upper():<10s}    : "
+                 f"{rep.target_db:+.2f} dB")
+        L.append(f"  achieved              : {rep.achieved_db:+.2f} dB")
+        L.append(f"  signal power          : {rep.signal_power:.3e}")
+        L.append(f"  interferer (raw)      : {rep.interferer_power_raw:.3e}")
+        L.append(f"  interferer (applied)  : "
+                 f"{rep.interferer_power_applied:.3e}")
+        L.append(f"  scale factor          : {rep.scale_factor:.3e}")
+        L.append(f"  alignment             : {rep.align}")
+        L.append(f"  samples               : {rep.n_samples}")
+        return L
+
+    def _set_status_from_frame(self, rep, mix_rep=None):
+        prefix = ""
+        if mix_rep is not None:
+            prefix = f"{mix_rep.mode.upper()} {mix_rep.achieved_db:+.1f}dB; "
         if not rep.sync_found:
             self.v["_status"].set(
-                f"NO SYNC (best distance {rep.sync_distance}/"
+                f"{prefix}NO SYNC (best distance {rep.sync_distance}/"
                 f"{rep.sync_pattern_bits})")
             return
         crc_part = ("CRC PASS" if rep.crc_ok
@@ -426,7 +544,7 @@ class VerifierGUI:
             ber_part = (f", payload errors {rep.n_payload_errors}/"
                         f"{rep.n_payload_compared}")
         self.v["_status"].set(
-            f"sync@{rep.sync_offset} (dist {rep.sync_distance}); "
+            f"{prefix}sync@{rep.sync_offset} (dist {rep.sync_distance}); "
             f"FEC corrections {rep.fec_corrections}; {crc_part}{ber_part}")
 
     def _format_frame_diagnostics(self, rep, expected) -> list[str]:
@@ -536,9 +654,7 @@ class VerifierGUI:
             return
         Path(p).write_text("".join(str(int(b)) for b in recovered))
 
-    def _draw_constellation(self, iq: np.ndarray, params: ReceiveParams,
-                             recovered: np.ndarray):
-        # Re-run the demod pipeline to expose the sampled symbols (cheap).
+    def _extract_symbols(self, iq: np.ndarray, params: ReceiveParams) -> np.ndarray:
         from .verifier import (_downconvert, _sample_single, _sample_oqpsk)
         from .filters import PulseShaper
         z = _downconvert(iq, params)
@@ -548,12 +664,30 @@ class VerifierGUI:
                               params.bt_product).apply(z).astype(np.complex64)
         sps = params.samples_per_symbol
         if params.modulation == "oqpsk":
-            sym = _sample_oqpsk(z, sps, params.filter_type)
-        else:
-            sym = _sample_single(z, sps, params.filter_type)
+            return _sample_oqpsk(z, sps, params.filter_type)
+        return _sample_single(z, sps, params.filter_type)
 
+    def _draw_constellations(self, iq_clean: np.ndarray, iq_mixed: np.ndarray,
+                              params: ReceiveParams, has_interferer: bool):
         self.fig.clear()
-        ax = self.fig.add_subplot(1, 1, 1)
+        sym_mix = self._extract_symbols(iq_mixed, params)
+        if has_interferer:
+            sym_clean = self._extract_symbols(iq_clean, params)
+            axL = self.fig.add_subplot(1, 2, 1)
+            axR = self.fig.add_subplot(1, 2, 2)
+            self._scatter(axL, sym_clean, "Before interferer (clean)")
+            self._scatter(axR, sym_mix, "After interferer")
+        else:
+            ax = self.fig.add_subplot(1, 1, 1)
+            self._scatter(ax, sym_mix,
+                           f"Recovered symbols — {params.modulation}")
+        try:
+            self.fig.tight_layout()
+        except Exception:
+            pass
+        self.canvas.draw()
+
+    def _scatter(self, ax, sym: np.ndarray, title: str):
         if sym.size:
             step = max(1, sym.size // 5000)
             pts = sym[::step]
@@ -566,13 +700,7 @@ class VerifierGUI:
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, alpha=0.3)
         ax.set_xlabel("I"); ax.set_ylabel("Q")
-        ax.set_title(f"Recovered symbols — {params.modulation} "
-                      f"({sym.size} symbols, {recovered.size} bits)")
-        try:
-            self.fig.tight_layout()
-        except Exception:
-            pass
-        self.canvas.draw()
+        ax.set_title(f"{title}  ({sym.size} symbols)")
 
 
 def main():

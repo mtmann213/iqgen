@@ -35,6 +35,11 @@ with an optional Tkinter GUI for interactive use.
 - **GUI**: Tkinter form with tooltips on every field, live 4-panel plot
   (constellation, IQ vs time, PSD, spectrogram), save/load YAML presets,
   PNG plot exported alongside each generated data file.
+- **Channel layer**: mix any iqgen recording with AWGN, a CW tone, or
+  another IQ file at a target SNR/SIR in dB. `iqgen.evaluate` sweeps
+  the target dB and produces a BER/FEC/CRC waterfall (CSV + PNG); the
+  verifier GUI exposes the same controls and plots before/after
+  constellations side-by-side.
 
 ## Install
 
@@ -95,9 +100,10 @@ python3 tests/smoke_test.py
 Covers all 10 modulations × 5 filters × 2 formats plus edge cases
 (bitstring/file/duration sources, sps auto-adjust, OQPSK even-sps bump,
 partial-symbol padding, multi-freq concurrent/hopping, Nyquist guard,
-50 modulated round-trips through the verifier, and framing tests across
-every FEC×CRC combo plus FEC-correctable / CRC-detected error cases).
-172/172 expected.
+50 modulated round-trips through the verifier, framing tests across
+every FEC×CRC combo plus FEC-correctable / CRC-detected error cases, and
+channel-layer tests for AWGN SNR/tone SIR accuracy plus an SNR waterfall
+through framing). 175/175 expected.
 
 ## Configuration
 
@@ -202,6 +208,34 @@ FEC capacity: Hamming(7,4) corrects 1 bit per 7-bit codeword;
 repetition-3 corrects 1 bit per 3-bit codeword. Beyond that the FEC
 silently mis-corrects, and the CRC catches the residual error.
 
+### Channel / interferer (optional)
+
+The `channel` module mixes a clean iqgen recording with an interferer
+at a target dB ratio:
+
+- **AWGN** — complex Gaussian, unit power, scaled to `target_db` SNR.
+- **CW tone** — complex exponential at a chosen frequency offset.
+- **IQ file** — any `.cf32` / `.sigmf-data`; alignment `truncate`,
+  `tile` (repeat-to-fill), or `pad` (interfere only the overlap).
+
+The verifier GUI surfaces this as the **Interferer** section: enable
+it, pick the type, dial in the target SNR/SIR, and the constellation
+plot becomes a before/after pair. The diagnostic panel adds a
+`[CHANNEL]` block reporting target vs achieved dB and per-component
+powers.
+
+For sweeps, use `iqgen.evaluate`:
+
+```bash
+python -m iqgen.evaluate recording.sigmf-meta \
+    --bits-file payload.txt --framing --expected-is-payload \
+    --interferer awgn --sweep=-20:10:2 \
+    --plot ber.png --csv sweep.csv
+```
+
+This produces a BER/FEC/CRC waterfall: one row per swept dB point with
+FEC corrections and CRC outcome, plotted side-by-side with payload BER.
+
 ## Pipeline
 
 ```
@@ -244,9 +278,11 @@ iqgen/
 ├── plotting.py        # 4-panel render() + headless save_png()
 ├── gui.py             # Tkinter form (additive — does not modify core)
 ├── framing.py         # Packet framing: preamble/sync/header/CRC/FEC
+├── channel.py         # AWGN / tone / file interferer mix at target dB
+├── evaluate.py        # SNR/SIR sweep CLI (CSV + BER waterfall PNG)
 ├── verifier.py        # Demodulator: IQ file → bits (inverse pipeline)
 ├── verify_cli.py      # CLI for the verifier
-└── verifier_gui.py    # Tkinter GUI for the verifier (+ framing diagnostics)
+└── verifier_gui.py    # Tkinter GUI (+ framing & interferer diagnostics)
 
 configs/example.yaml   # fully commented reference config
 tests/smoke_test.py    # 100-case smoke test
