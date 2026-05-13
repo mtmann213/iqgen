@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from iqgen.config import SignalConfig
 from iqgen.generator import IQGenerator
+from iqgen.verifier import ReceiveParams, compare_bits, demodulate
 from iqgen.writers import Cf32Writer, SigMFWriter
 
 
@@ -232,6 +233,41 @@ def run() -> int:
     except Exception as e:
         failures.append(("multi-freq hopping", e))
         print(f"  FAIL  multi-freq hopping: {e}")
+
+    # Round-trip: generate, then verify — every modulation × every filter
+    print("\nRound-trip (generate -> verify):")
+    rng = np.random.default_rng(2024)
+    src_bits = rng.integers(0, 2, 600, dtype=np.uint8)
+    src_bitstring = "".join(str(int(b)) for b in src_bits.tolist())
+    for mod in MODS:
+        for filt in FILTERS:
+            label = f"{mod:10s} + {filt:20s}"
+            try:
+                cfg = SignalConfig.from_dict({
+                    **base_config(out_dir, mod, filt, "cf32"),
+                    "source": {"type": "bitstring", "bits": src_bitstring},
+                })
+                signal = IQGenerator(cfg).generate()
+                params = ReceiveParams(
+                    modulation=mod, sample_rate=cfg.sample_rate,
+                    bitrate=cfg.bitrate, filter_type=filt,
+                    span_symbols=cfg.span_symbols, roll_off=cfg.roll_off,
+                    bt_product=cfg.bt_product, gray_coding=cfg.gray_coding,
+                    initial_phase=cfg.initial_phase,
+                )
+                recovered = demodulate(signal, params)
+                report = compare_bits(recovered, src_bits)
+                if report.n_errors == 0:
+                    n_ok += 1
+                    print(f"  OK    {label}  recovered {report.n_recovered_bits}, "
+                          f"errors 0/{report.n_compared}")
+                else:
+                    failures.append((f"round-trip {label}",
+                                     RuntimeError(f"{report.n_errors} bit errors")))
+                    print(f"  FAIL  {label}  {report.n_errors} errors")
+            except Exception as e:
+                failures.append((f"round-trip {label}", e))
+                print(f"  FAIL  {label}: {e}")
 
     # Multi-frequency: Nyquist violation must raise
     try:

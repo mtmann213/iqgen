@@ -53,6 +53,25 @@ python -m iqgen.gui
 The GUI builds the same config dict as the YAML loader, so anything the CLI
 accepts can be expressed in the form (and vice versa via Save preset).
 
+### Verifier (demodulate a recording back to bits)
+
+```bash
+# SigMF input — parameters auto-read from the .sigmf-meta file
+python -m iqgen.verify_cli recording.sigmf-meta --bits "10110010..."
+
+# Raw .cf32 — supply parameters manually
+python -m iqgen.verify_cli sig.cf32 -m qpsk -s 1e6 -b 100e3 \
+    -f root_raised_cosine --roll-off 0.35 --bits-file expected.txt
+
+# GUI version (auto-fill from SigMF, manual entry for cf32):
+python -m iqgen.verifier_gui
+```
+
+The verifier is a noise-free matched receiver: it knows the parameters
+(from SigMF metadata or supplied flags) and demodulates accordingly.
+Supports every modulation/filter combo iqgen generates plus multi-frequency
+(concurrent + hopping). Reports BER when expected bits are provided.
+
 ### Smoke tests
 
 ```bash
@@ -163,7 +182,10 @@ iqgen/
 ├── generator.py       # IQGenerator pipeline + multi-freq stage
 ├── writers.py         # Cf32Writer, SigMFWriter
 ├── plotting.py        # 4-panel render() + headless save_png()
-└── gui.py             # Tkinter form (additive — does not modify core)
+├── gui.py             # Tkinter form (additive — does not modify core)
+├── verifier.py        # Demodulator: IQ file → bits (inverse pipeline)
+├── verify_cli.py      # CLI for the verifier
+└── verifier_gui.py    # Tkinter GUI for the verifier
 
 configs/example.yaml   # fully commented reference config
 tests/smoke_test.py    # 100-case smoke test

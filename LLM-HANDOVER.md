@@ -33,9 +33,17 @@ it worked before moving on.
    `_hold_upsample` (sample-and-hold NRZ, used when no filter). After the
    fix: ~90% of power within ±symbol_rate (was ~25% before); first -20 dB
    rolloff near the symbol rate as expected.
-5. **Multi-frequency** (most recent) — optional `channels:` YAML block with
+5. **Multi-frequency** — optional `channels:` YAML block with
    `concurrent` and `hopping` modes. GUI uses space-delimited values in the
-   existing Center freq field.
+   existing Center freq field (2+ values → every value is a baseband carrier
+   offset, SigMF center = 0).
+6. **π/2-BPSK** — added the 5G NR low-PAPR modulation (1 bit/symbol; even
+   symbols on the real axis, odd on the imaginary).
+7. **Verifier** (most recent) — noise-free matched receiver that recovers
+   bits from a .cf32 or .sigmf-data file. CLI and Tkinter GUI. Supports
+   every mod/filter combo + multi-frequency. Lives in `verifier.py`,
+   `verify_cli.py`, `verifier_gui.py`. 50 round-trip cases (generate →
+   verify) are part of the smoke suite.
 
 ## Architecture
 
@@ -67,6 +75,19 @@ lives in its own module so they can be swapped/extended:
   validation happens for multi-freq, and where `sample_rate` is
   auto-bumped to keep `sps` integer (and even for OQPSK).
 - `gui.py` — additive only. Imports the pipeline; never modifies it.
+- `verifier.py` — inverse pipeline. `demodulate(iq, ReceiveParams)`
+  returns bits. Key insight: `PulseShaper.apply()` uses `mode="same"`, so
+  post-convolution symbol *n* sits at sample `n*sps` (no group-delay
+  offset to chase). Matched filter is applied only for RRC (turns it into
+  RC — zero-ISI). For other filters direct sampling at `n*sps` works
+  because TX already produces zero (or near-zero) ISI at symbol centers.
+  OQPSK is handled specially: I and Q peaks are offset by `sps/2`.
+- `verify_cli.py` — `python -m iqgen.verify_cli FILE [--bits ...] [--modulation ...]`.
+  SigMF inputs auto-populate params from `iqgen:*` annotation keys; cf32
+  inputs require the params via flags.
+- `verifier_gui.py` — Tkinter form mirroring the generator GUI's fields.
+  Auto-fills from a chosen .sigmf-meta. Constellation plot of the
+  recovered (post-matched-filter) symbols after Verify.
 
 ## Important design decisions
 
