@@ -35,7 +35,9 @@ if __package__ in (None, ""):
     from iqgen.verifier import (ReceiveParams, compare_bits, demodulate,
                                 demodulate_frame, detect_format,
                                 find_sigmf_data_for_meta, load_iq,
-                                params_from_sigmf_meta, parse_bits)
+                                params_from_sigmf_meta, parse_bits,
+                                _downconvert, _sample_single, _sample_oqpsk)
+    from iqgen.filters import PulseShaper
     from iqgen.framing import FrameConfig
     from iqgen import channel as ch
 else:
@@ -43,7 +45,9 @@ else:
     from .verifier import (ReceiveParams, compare_bits, demodulate,
                             demodulate_frame, detect_format,
                             find_sigmf_data_for_meta, load_iq,
-                            params_from_sigmf_meta, parse_bits)
+                            params_from_sigmf_meta, parse_bits,
+                            _downconvert, _sample_single, _sample_oqpsk)
+    from .filters import PulseShaper
     from .framing import FrameConfig
     from . import channel as ch
 
@@ -179,7 +183,8 @@ class VerifierGUI:
                          variable=self.v["intf_enabled"]).grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         self._combo(ic, 1, "Type", self.v["intf_type"], INTERFERER_TYPES)
-        self._entry(ic, 2, "Target SNR/SIR (dB)", self.v["intf_target_db"])
+        self._entry(ic, 2, "Target dB (+ = signal stronger)",
+                     self.v["intf_target_db"])
         self._entry(ic, 3, "Tone freq offset (Hz)", self.v["intf_tone_freq_hz"])
         self._entry(ic, 4, "Tone phase (rad)", self.v["intf_tone_phase"])
         ttk.Label(ic, text="File interferer").grid(
@@ -508,7 +513,10 @@ class VerifierGUI:
 
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", "\n".join(lines))
-        self._draw_constellations(iq_clean, iq, params, mix_rep is not None)
+        try:
+            self._draw_constellations(iq_clean, iq, params, mix_rep is not None)
+        except Exception as e:
+            messagebox.showerror("Constellation plot failed", str(e))
 
     def _format_channel_diagnostics(self, rep) -> list[str]:
         L = []
@@ -517,7 +525,7 @@ class VerifierGUI:
         L.append("=" * 60)
         L.append(f"[CHANNEL: {self.v['intf_type'].get()}]")
         L.append(f"  target {rep.mode.upper():<10s}    : "
-                 f"{rep.target_db:+.2f} dB")
+                 f"{rep.target_db:+.2f} dB  (+ = signal stronger)")
         L.append(f"  achieved              : {rep.achieved_db:+.2f} dB")
         L.append(f"  signal power          : {rep.signal_power:.3e}")
         L.append(f"  interferer (raw)      : {rep.interferer_power_raw:.3e}")
@@ -526,6 +534,12 @@ class VerifierGUI:
         L.append(f"  scale factor          : {rep.scale_factor:.3e}")
         L.append(f"  alignment             : {rep.align}")
         L.append(f"  samples               : {rep.n_samples}")
+        if rep.target_db >= 0:
+            L.append("")
+            L.append("  Note: target_db >= 0 means signal is stronger than")
+            L.append("        the interferer; expect clean recovery. Use")
+            L.append("        NEGATIVE values to push the demod into errors")
+            L.append("        (matched-filter gain hides the first ~10 dB).")
         return L
 
     def _set_status_from_frame(self, rep, mix_rep=None):
@@ -563,6 +577,16 @@ class VerifierGUI:
         L.append(f"  result                : "
                  f"{'FOUND' if rep.sync_found else 'NOT FOUND'}")
         if not rep.sync_found:
+            # Distance near pattern_bits/2 = random match → signal is
+            # almost certainly NOT framed (or wrong preamble/sync set).
+            near_half = abs(rep.sync_distance - rep.sync_pattern_bits / 2)
+            if near_half < rep.sync_pattern_bits * 0.15:
+                L.append("  hint                  : distance is near "
+                         "pattern/2 (random match level) —")
+                L.append("                          the IQ file probably "
+                         "wasn't generated with framing,")
+                L.append("                          or the preamble/sync "
+                         "in the GUI don't match the TX.")
             if rep.notes:
                 L.append("  notes:")
                 for n in rep.notes:
@@ -655,8 +679,6 @@ class VerifierGUI:
         Path(p).write_text("".join(str(int(b)) for b in recovered))
 
     def _extract_symbols(self, iq: np.ndarray, params: ReceiveParams) -> np.ndarray:
-        from .verifier import (_downconvert, _sample_single, _sample_oqpsk)
-        from .filters import PulseShaper
         z = _downconvert(iq, params)
         if params.filter_type == "root_raised_cosine":
             z = PulseShaper(params.filter_type, params.span_symbols,
