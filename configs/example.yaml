@@ -20,7 +20,7 @@ signal:
 
 # ----- Data source: exactly one type ----------------------------------------
 source:
-  type: bitstring                        # random | file | bitstring
+  type: bitstring                        # random | file | bitstring | framed
 
   # type=random:
   # bit_count: 10000                    # number of bits to generate
@@ -33,6 +33,24 @@ source:
 
   # type=bitstring:
   bits: "1010111100001010"       # only 0/1 chars; whitespace ignored
+
+  # type=framed: wraps another source as the payload of a packet frame:
+  #   [preamble][syncword][FEC(header || payload || CRC)]
+  # All keys under 'framing:' are optional — defaults shown below.
+  # payload:
+  #   type: random
+  #   bit_count: 240
+  #   seed: 42
+  # framing:
+  #   preamble_hex: "AAAAAAAA"        # 32 bits, alternating
+  #   syncword_hex: "1ACFFC1D"        # CCSDS 32-bit ASM
+  #   header_format:                  # ordered (name, bit-width)
+  #     - [length, 16]
+  #     - [seq, 8]
+  #     - [type, 8]
+  #   header_values: {seq: 0, type: 0}  # length is auto-filled from payload
+  #   crc: "crc16-ccitt-false"        # none | crc16-ccitt-false | crc32
+  #   fec: "hamming-7-4"              # none | repetition-3 | hamming-7-4
 
 # ----- Modulation -----------------------------------------------------------
 modulation:

@@ -6,13 +6,18 @@ that you can continue without re-deriving context.
 
 ## Current status
 
-**Working state.** All 100 smoke tests pass
+**Working state.** All 172 smoke tests pass
 (`python3 tests/smoke_test.py`). CLI and GUI both function end-to-end.
 
-Last completed feature: multi-frequency transmission (concurrent FDM and
-frequency hopping). Verified that FFT peaks land at the configured offsets.
+Last completed feature: packet framing — `[preamble][syncword][FEC(header
+‖ payload ‖ CRC)]` layer with a frame-aware verifier and full diagnostic
+panel in the verifier GUI (sync offset/distance, header fields, FEC
+codewords + corrections + corrected positions, CRC computed vs expected,
+payload BER + first error positions).
 
-No known bugs. No pending features the user has asked for.
+No known bugs. Likely next user request: a channel/interference layer
+(AWGN, tone, custom IQ file) at varying SNR/SIR with a BER sweep. See
+"If the user asks for…" below.
 
 ## Build history (phases)
 
@@ -39,11 +44,21 @@ it worked before moving on.
    offset, SigMF center = 0).
 6. **π/2-BPSK** — added the 5G NR low-PAPR modulation (1 bit/symbol; even
    symbols on the real axis, odd on the imaginary).
-7. **Verifier** (most recent) — noise-free matched receiver that recovers
-   bits from a .cf32 or .sigmf-data file. CLI and Tkinter GUI. Supports
-   every mod/filter combo + multi-frequency. Lives in `verifier.py`,
+7. **Verifier** — noise-free matched receiver that recovers bits from a
+   .cf32 or .sigmf-data file. CLI and Tkinter GUI. Supports every
+   mod/filter combo + multi-frequency. Lives in `verifier.py`,
    `verify_cli.py`, `verifier_gui.py`. 50 round-trip cases (generate →
    verify) are part of the smoke suite.
+8. **Packet framing** (most recent) — `iqgen/framing.py` adds CRC
+   (CCITT-16, CRC-32), FEC (Hamming(7,4), repetition-3, none), and a
+   `FrameConfig` driving `build_frame()` / `parse_frame()`. New `framed`
+   source in `sources.py` wraps any payload source. Verifier exposes
+   `demodulate_frame()` returning recovered bits + a `FrameReport` with
+   every diagnostic layer. `verifier_gui.py` got a scrollable left panel
+   with a Framing LabelFrame (knobs for preamble/sync/header/CRC/FEC)
+   and a multi-section diagnostic display. 12 framing smoke tests
+   (all FEC×CRC combos at bit level + FEC-correctable error case +
+   uncorrectable→CRC-detected case + modulated round-trip).
 
 ## Architecture
 
@@ -87,7 +102,19 @@ lives in its own module so they can be swapped/extended:
   inputs require the params via flags.
 - `verifier_gui.py` — Tkinter form mirroring the generator GUI's fields.
   Auto-fills from a chosen .sigmf-meta. Constellation plot of the
-  recovered (post-matched-filter) symbols after Verify.
+  recovered (post-matched-filter) symbols after Verify. Left panel is
+  wrapped in a Canvas with a vertical scrollbar (the Framing section
+  adds height beyond the visible window).
+- `framing.py` — packet framing. On the TX side: `build_frame(payload,
+  FrameConfig)` produces `[preamble][syncword][FEC(header‖payload‖CRC)]`.
+  On the RX side: `parse_frame(bits, FrameConfig)` returns a
+  `FrameReport` with sync offset/distance, header fields, FEC stats
+  (codewords/corrections/positions), CRC pass/fail, payload bits, and
+  optional payload BER vs expected. CRC is computed over (header‖payload)
+  BEFORE FEC. FEC over the whole protected block (header+payload+CRC) as
+  one contiguous bit stream. Preamble and syncword are transmitted
+  uncoded for sync correlation. `find_sync()` does sliding Hamming-
+  distance search against the combined `preamble||syncword` pattern.
 
 ## Important design decisions
 
@@ -163,21 +190,36 @@ lives in its own module so they can be swapped/extended:
    different phase at the start of each hop. This matches how a real
    frequency hopper looks.
 
+9. **Frame CRC vs FEC ordering.** CRC is computed over (header ‖
+   payload), THEN FEC encodes (header ‖ payload ‖ CRC) as one block.
+   On decode: FEC first → CRC second. Don't swap; CRC-after-FEC is
+   what gives the useful diagnostic ("FEC corrected N bits, CRC then
+   passed/failed").
+
+10. **Hamming(7,4) mis-corrects with 2 bit errors.** Beyond capacity it
+    silently outputs wrong data and reports a correction. The CRC is
+    your safety net. The smoke test relies on this: a 2-bit corruption
+    in one codeword produces "FEC corrections: 1, CRC: FAIL" — that's
+    a valid pass, not a bug.
+
+11. **`IQGenerator.source` is set during `generate()`.** Useful for
+    inspecting the actual generated payload (e.g. `gen.source._last_payload`
+    on a FramedSource) for BER comparison. Before `generate()` it's None.
+
 ## Tests
 
-`tests/smoke_test.py` (100 cases):
+`tests/smoke_test.py` (172 cases):
 
-- 9 modulations × 5 filters × 2 formats = 90 cases
-- Edge cases (10):
-  - bitstring source
-  - file source msb_first / lsb_first
-  - duration_sec source
-  - sample_rate auto-adjust (non-integer sps)
-  - OQPSK odd-sps auto-bump
-  - partial-symbol zero-pad
-  - multi-freq concurrent (3 carriers, FDM)
-  - multi-freq hopping (round-robin)
-  - multi-freq Nyquist guard (must raise with helpful error)
+- 10 modulations × 5 filters × 2 formats = 100 cases
+- Edge cases (~10): bitstring/file/duration sources, sample-rate
+  auto-adjust, OQPSK odd-sps bump, partial-symbol zero-pad, multi-freq
+  concurrent/hopping, Nyquist guard.
+- Verifier round-trip: 10 modulations × 5 filters = 50 cases (generate
+  → demod → BER must be 0).
+- Framing (12 cases): every FEC×CRC combination at the bit level +
+  Hamming 1-bit FEC-correctable + Hamming 2-bit-in-codeword
+  uncorrectable (must trip CRC) + a modulated end-to-end framed
+  round-trip (QPSK + RRC + Hamming + CRC-16).
 
 Run: `python3 tests/smoke_test.py`. Cleans up `smoke_output/` automatically.
 
@@ -192,6 +234,8 @@ assertion that confirms it raises.
 | Add a new modulation | `iqgen/mappers.py` + `BITS_PER_SYMBOL` in `config.py` + GUI `MODULATIONS` list |
 | Add a new pulse-shaping filter | `iqgen/filters.py` + `VALID_FILTERS` in `config.py` + GUI `FILTERS` list |
 | Add a new data source type | `iqgen/sources.py::DataSource.from_config` + GUI `SOURCE_TYPES` + new LabelFrame in `_tab_source` |
+| Add a new CRC or FEC | `iqgen/framing.py` (`CRC_SPECS` for CRCs; new branch in `fec_encode`/`fec_decode`/`fec_overhead_bits` for FEC) + add to `CRC_OPTIONS` / `FEC_OPTIONS` in `verifier_gui.py` |
+| Change frame layout (header fields, sync word) | Frame is per-instance via `FrameConfig`. For new *defaults*, edit `_DEFAULT_*` at top of `framing.py` |
 | Change SigMF annotation contents | `iqgen/writers.py::SigMFWriter.write` |
 | Add a new plot panel | `iqgen/plotting.py` (new `_func`, add to `render` grid) |
 | Add a new YAML field | `iqgen/config.py::_validate_and_derive` + dataclass field + `configs/example.yaml` doc + GUI `_make_vars` / `_build_config_dict` / `_populate_from_dict` + tooltip in `T` dict |
@@ -235,6 +279,23 @@ assertion that confirms it raises.
 - **Real-time / streaming output**: current pipeline is batch-only.
   Would require restructuring `generate()` into a generator that yields
   blocks.
+- **Channel / interference simulation** (likely next request): the user
+  has already sketched it. Plan was: new `iqgen/channel.py` exposing
+  `mix(signal, interferer, target_db, mode='snr'|'sir', ...)` plus
+  interferer constructors (`awgn`, `tone`, `from_file`); new
+  `iqgen.evaluate` CLI that sweeps SNR and reports BER per point by
+  feeding mixed signals to the existing `demodulate`/`demodulate_frame`.
+  Keep `channel.py` payload-agnostic — it just mixes IQ. Framing
+  diagnostics naturally tell the story (sync still found? FEC
+  corrections climbing? CRC failures?).
+- **More FEC schemes** (convolutional, Reed-Solomon, LDPC): add to
+  `framing.py` following the Hamming(7,4) pattern. Each needs
+  `fec_encode`, `fec_decode` (returning `FecDecodeResult`), and
+  `fec_overhead_bits`. Update `FEC_OPTIONS` in `verifier_gui.py`.
+- **Frame on a noisy channel**: `parse_frame` already accepts
+  `max_sync_distance`. When the interference layer lands, expose this
+  knob in the GUI so the user can tune sync tolerance vs false-positive
+  rate.
 
 ## Environment
 

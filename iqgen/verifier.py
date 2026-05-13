@@ -434,3 +434,25 @@ def parse_bits(s: str) -> np.ndarray:
     """Accept '0'/'1' characters; strip everything else."""
     arr = np.array([int(c) for c in s if c in "01"], dtype=np.uint8)
     return arr
+
+
+# =============================================================================
+# Frame-aware demod
+# =============================================================================
+
+def demodulate_frame(iq: np.ndarray, params: "ReceiveParams",
+                     frame_config,
+                     expected_payload_bits: Optional[np.ndarray] = None,
+                     max_sync_distance: Optional[int] = None):
+    """Demodulate `iq` and parse the result as a framed packet.
+
+    Returns a tuple `(recovered_bits, FrameReport)`. The raw recovered
+    bits are also kept on the report's `payload_bits` (for the payload
+    portion) for ease of access.
+    """
+    from .framing import parse_frame  # local import to keep framing optional
+    bits = demodulate(iq, params)
+    report = parse_frame(bits, frame_config,
+                         expected_payload_bits=expected_payload_bits,
+                         max_sync_distance=max_sync_distance)
+    return bits, report

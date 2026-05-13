@@ -17,13 +17,14 @@ class IQGenerator:
 
     def __init__(self, config: SignalConfig):
         self.cfg = config
+        self.source: DataSource | None = None  # last source instance used by generate()
 
     def generate(self) -> np.ndarray:
         cfg = self.cfg
 
         # 1. Bits
-        source = DataSource.from_config(cfg.source_cfg, bitrate=cfg.bitrate)
-        bits = source.get_bits()
+        self.source = DataSource.from_config(cfg.source_cfg, bitrate=cfg.bitrate)
+        bits = self.source.get_bits()
         log.info("Source produced %d bits", bits.size)
 
         # 2. Zero-pad to a whole symbol

@@ -11,8 +11,17 @@ with an optional Tkinter GUI for interactive use.
   where applicable.
 - **5 pulse-shaping filters**: none (NRZ sample-and-hold), root-raised-cosine,
   raised-cosine, Gaussian (BT product), rectangular.
-- **3 data sources**: random (with optional seed), file (packed bits,
-  msb/lsb-first), bitstring (literal `0`/`1` characters).
+- **4 data sources**: random (with optional seed), file (packed bits,
+  msb/lsb-first), bitstring (literal `0`/`1` characters), framed
+  (wraps any of the above in a packet: preamble, syncword, header, CRC,
+  FEC).
+- **Packet framing**: optional `[preamble][syncword][FEC(header‖payload‖CRC)]`
+  layer. Defaults: 32-bit `0xAA…` preamble, 32-bit CCSDS syncword
+  `0x1ACFFC1D`, 4-byte header `length:16 ‖ seq:8 ‖ type:8`,
+  CRC-16-CCITT-FALSE, Hamming(7,4) FEC — all overridable. The
+  verifier reports preamble/sync offset and Hamming distance, FEC
+  codewords + corrections + corrected positions, CRC computed vs
+  expected, and payload BER.
 - **Interconnected rates**: `bitrate` is the source of truth.
   `symbol_rate = bitrate / bits_per_symbol` and
   `samples_per_symbol = sample_rate / symbol_rate` are derived. `sample_rate`
@@ -72,15 +81,23 @@ The verifier is a noise-free matched receiver: it knows the parameters
 Supports every modulation/filter combo iqgen generates plus multi-frequency
 (concurrent + hopping). Reports BER when expected bits are provided.
 
+The GUI also has a **Framing** section: enable it to parse the
+demodulated bit stream as a packet (preamble + syncword + FEC over
+header/payload/CRC) and surface every diagnostic layer — see "Packet
+framing" below.
+
 ### Smoke tests
 
 ```bash
 python3 tests/smoke_test.py
 ```
 
-Covers all 9 modulations × 5 filters × 2 formats plus edge cases
+Covers all 10 modulations × 5 filters × 2 formats plus edge cases
 (bitstring/file/duration sources, sps auto-adjust, OQPSK even-sps bump,
-partial-symbol padding, multi-freq concurrent/hopping, Nyquist guard).
+partial-symbol padding, multi-freq concurrent/hopping, Nyquist guard,
+50 modulated round-trips through the verifier, and framing tests across
+every FEC×CRC combo plus FEC-correctable / CRC-detected error cases).
+172/172 expected.
 
 ## Configuration
 
@@ -96,7 +113,7 @@ signal:
   timestamp: true
 
 source:
-  type: random                  # random | file | bitstring
+  type: random                  # random | file | bitstring | framed
   bit_count: 10000
   seed: 42
 
@@ -142,6 +159,49 @@ violation produces an error message containing the minimum required
 `sample_rate`. Bandwidth is `symbol_rate·(1+roll_off)/2` for RRC/RC and
 `symbol_rate` for other filters (conservative NRZ main-lobe estimate).
 
+### Packet framing (optional)
+
+Wrap any payload source in `[preamble][syncword][FEC(header‖payload‖CRC)]`.
+Preamble and syncword are sent uncoded (the receiver uses them for sync
+correlation); FEC covers `header‖payload‖CRC` as one block. CRC is
+computed over `header‖payload` *before* FEC, so on decode you get a clean
+two-layer story: FEC tells you how much damage was repaired, CRC tells
+you whether any errors slipped through.
+
+```yaml
+source:
+  type: framed
+  payload:
+    type: random                # nested source: random | file | bitstring
+    bit_count: 240
+    seed: 42
+  framing:                      # all keys optional — defaults shown
+    preamble_hex: "AAAAAAAA"    # 32-bit alternating
+    syncword_hex: "1ACFFC1D"    # CCSDS 32-bit ASM
+    header_format:              # ordered (name, bit-width)
+      - [length, 16]
+      - [seq, 8]
+      - [type, 8]
+    header_values: {seq: 0, type: 0}   # length is auto-filled from payload
+    crc: "crc16-ccitt-false"    # none | crc16-ccitt-false | crc32
+    fec: "hamming-7-4"          # none | repetition-3 | hamming-7-4
+```
+
+The verifier GUI exposes the same knobs and renders a diagnostic panel:
+
+```
+[SYNC]    preamble offset, syncword offset, hamming distance, FOUND/NOT FOUND
+[HEADER]  every field name → value (decimal + hex), raw header bits
+[FEC]     codewords, corrections, list of corrected bit positions
+[CRC]     expected (from frame), computed, PASS/FAIL
+[PAYLOAD] declared length, recovered length, BER, first error positions,
+          payload bit preview
+```
+
+FEC capacity: Hamming(7,4) corrects 1 bit per 7-bit codeword;
+repetition-3 corrects 1 bit per 3-bit codeword. Beyond that the FEC
+silently mis-corrects, and the CRC catches the residual error.
+
 ## Pipeline
 
 ```
@@ -183,9 +243,10 @@ iqgen/
 ├── writers.py         # Cf32Writer, SigMFWriter
 ├── plotting.py        # 4-panel render() + headless save_png()
 ├── gui.py             # Tkinter form (additive — does not modify core)
+├── framing.py         # Packet framing: preamble/sync/header/CRC/FEC
 ├── verifier.py        # Demodulator: IQ file → bits (inverse pipeline)
 ├── verify_cli.py      # CLI for the verifier
-└── verifier_gui.py    # Tkinter GUI for the verifier
+└── verifier_gui.py    # Tkinter GUI for the verifier (+ framing diagnostics)
 
 configs/example.yaml   # fully commented reference config
 tests/smoke_test.py    # 100-case smoke test

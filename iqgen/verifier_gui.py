@@ -29,19 +29,25 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from iqgen.config import BITS_PER_SYMBOL, VALID_FILTERS
     from iqgen.verifier import (ReceiveParams, compare_bits, demodulate,
-                                detect_format, find_sigmf_data_for_meta,
-                                load_iq, params_from_sigmf_meta, parse_bits)
+                                demodulate_frame, detect_format,
+                                find_sigmf_data_for_meta, load_iq,
+                                params_from_sigmf_meta, parse_bits)
+    from iqgen.framing import FrameConfig
 else:
     from .config import BITS_PER_SYMBOL, VALID_FILTERS
     from .verifier import (ReceiveParams, compare_bits, demodulate,
-                            detect_format, find_sigmf_data_for_meta, load_iq,
+                            demodulate_frame, detect_format,
+                            find_sigmf_data_for_meta, load_iq,
                             params_from_sigmf_meta, parse_bits)
+    from .framing import FrameConfig
 
 log = logging.getLogger(__name__)
 
 MODULATIONS = sorted(BITS_PER_SYMBOL)
 FILTERS = sorted(VALID_FILTERS)
 CHANNEL_MODES = ["concurrent", "hopping"]
+CRC_OPTIONS = ["none", "crc16-ccitt-false", "crc32"]
+FEC_OPTIONS = ["none", "repetition-3", "hamming-7-4"]
 
 
 class VerifierGUI:
@@ -65,15 +71,48 @@ class VerifierGUI:
             "channel_mode": tk.StringVar(value="concurrent"),
             "hop_duration_sec": tk.StringVar(value=""),
             "expected_bits_path": tk.StringVar(value=""),
+            # Framing
+            "frame_enabled": tk.BooleanVar(value=False),
+            "frame_preamble_hex": tk.StringVar(value="AAAAAAAA"),
+            "frame_sync_hex": tk.StringVar(value="1ACFFC1D"),
+            "frame_header_format": tk.StringVar(value="length:16,seq:8,type:8"),
+            "frame_crc": tk.StringVar(value="crc16-ccitt-false"),
+            "frame_fec": tk.StringVar(value="hamming-7-4"),
+            "frame_max_sync_dist": tk.StringVar(value=""),
+            "expected_is_payload": tk.BooleanVar(value=True),
             "_status": tk.StringVar(value="Pick an IQ file to begin."),
         }
 
         main = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
         main.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        left = ttk.Frame(main, width=520)
+        left_wrap = ttk.Frame(main, width=560)
         right = ttk.Frame(main)
-        main.add(left, weight=0)
+        main.add(left_wrap, weight=0)
         main.add(right, weight=1)
+
+        # Scrollable left panel — framing section adds height.
+        left_canvas = tk.Canvas(left_wrap, borderwidth=0, highlightthickness=0)
+        vsb = ttk.Scrollbar(left_wrap, orient="vertical", command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="both", expand=True)
+        left = ttk.Frame(left_canvas)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+
+        def _on_left_configure(_evt):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            left_canvas.itemconfigure(left_window, width=left_canvas.winfo_width())
+
+        left.bind("<Configure>", _on_left_configure)
+        left_canvas.bind("<Configure>", _on_left_configure)
+        # Mouse-wheel scroll on the left pane
+        left_canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: left_canvas.yview_scroll(int(-e.delta / 120), "units"))
+        left_canvas.bind_all(
+            "<Button-4>", lambda e: left_canvas.yview_scroll(-1, "units"))
+        left_canvas.bind_all(
+            "<Button-5>", lambda e: left_canvas.yview_scroll(+1, "units"))
 
         self._build_form(left)
         self._build_plot(right)
@@ -115,6 +154,23 @@ class VerifierGUI:
         self._combo(mf, 1, "Channel mode", self.v["channel_mode"], CHANNEL_MODES)
         self._entry(mf, 2, "Hop duration (s)", self.v["hop_duration_sec"])
 
+        # Framing
+        ff = ttk.LabelFrame(parent, text="Framing", padding=6)
+        ff.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Checkbutton(ff, text="Enable framing (parse packet structure)",
+                         variable=self.v["frame_enabled"]).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        self._entry(ff, 1, "Preamble (hex)", self.v["frame_preamble_hex"])
+        self._entry(ff, 2, "Syncword (hex)", self.v["frame_sync_hex"])
+        self._entry(ff, 3, "Header format (name:bits,…)", self.v["frame_header_format"])
+        self._combo(ff, 4, "CRC", self.v["frame_crc"], CRC_OPTIONS)
+        self._combo(ff, 5, "FEC", self.v["frame_fec"], FEC_OPTIONS)
+        self._entry(ff, 6, "Max sync dist (blank=auto)",
+                     self.v["frame_max_sync_dist"])
+        ttk.Button(ff, text="Reset to defaults",
+                    command=self._reset_framing_defaults).grid(
+            row=7, column=1, sticky="w", pady=(4, 0))
+
         # Expected bits
         eb = ttk.LabelFrame(parent, text="Expected bits (optional)", padding=6)
         eb.pack(fill=tk.X, padx=4, pady=4)
@@ -128,6 +184,10 @@ class VerifierGUI:
                                        font=("TkFixedFont", 9))
         self.expected_text.grid(row=1, column=1, columnspan=2,
                                  sticky="ew", padx=2, pady=4)
+        ttk.Checkbutton(eb,
+                         text="When framing is on, treat expected as PAYLOAD bits only",
+                         variable=self.v["expected_is_payload"]).grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
         eb.grid_columnconfigure(1, weight=1)
 
         # Actions
@@ -215,6 +275,43 @@ class VerifierGUI:
             "" if params.hop_duration_sec is None else f"{params.hop_duration_sec:g}")
         self.v["_status"].set(f"Auto-filled from {meta_path.name}")
 
+    def _reset_framing_defaults(self):
+        self.v["frame_preamble_hex"].set("AAAAAAAA")
+        self.v["frame_sync_hex"].set("1ACFFC1D")
+        self.v["frame_header_format"].set("length:16,seq:8,type:8")
+        self.v["frame_crc"].set("crc16-ccitt-false")
+        self.v["frame_fec"].set("hamming-7-4")
+        self.v["frame_max_sync_dist"].set("")
+
+    def _parse_header_format(self, s: str) -> tuple:
+        out = []
+        for part in s.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" not in part:
+                raise ValueError(
+                    f"Header field {part!r} missing ':bits' (e.g. 'length:16')")
+            name, bits = part.split(":", 1)
+            out.append((name.strip(), int(bits.strip())))
+        if not out:
+            raise ValueError("Header format must have at least one field.")
+        return tuple(out)
+
+    def _build_frame_config(self) -> FrameConfig:
+        preamble = bytes.fromhex(
+            self.v["frame_preamble_hex"].get().strip().replace(" ", ""))
+        sync = bytes.fromhex(
+            self.v["frame_sync_hex"].get().strip().replace(" ", ""))
+        hdr_fmt = self._parse_header_format(self.v["frame_header_format"].get())
+        return FrameConfig(
+            preamble=preamble,
+            syncword=sync,
+            header_format=hdr_fmt,
+            crc=self.v["frame_crc"].get() or "none",
+            fec=self.v["frame_fec"].get() or "none",
+        )
+
     def _build_params(self) -> ReceiveParams:
         def _f(name, default=None):
             s = self.v[name].get().strip()
@@ -269,31 +366,164 @@ class VerifierGUI:
                                   "Sample rate and bitrate are required.")
             return
 
+        framing_on = bool(self.v["frame_enabled"].get())
+        expected = self._get_expected()
+
         try:
-            recovered = demodulate(iq, params)
+            if framing_on:
+                fc = self._build_frame_config()
+                msd_raw = self.v["frame_max_sync_dist"].get().strip()
+                max_sync = int(msd_raw) if msd_raw else None
+                exp_payload = expected if (
+                    expected is not None
+                    and self.v["expected_is_payload"].get()) else None
+                recovered, report = demodulate_frame(
+                    iq, params, fc,
+                    expected_payload_bits=exp_payload,
+                    max_sync_distance=max_sync)
+                self._frame_report = report
+                self._fc = fc
+            else:
+                recovered = demodulate(iq, params)
+                self._frame_report = None
         except Exception as e:
             messagebox.showerror("Demodulation failed", str(e))
             return
         self._recovered = recovered
 
-        expected = self._get_expected()
-        lines = []
-        if expected is not None:
-            report = compare_bits(recovered, expected)
-            lines.append(str(report))
-            self.v["_status"].set(
-                f"BER {report.ber:.3e}" if report.n_compared else "no comparison")
+        # Build the result panel text
+        lines: list[str] = []
+        if framing_on:
+            lines.extend(self._format_frame_diagnostics(self._frame_report,
+                                                         expected))
+            self._set_status_from_frame(self._frame_report)
         else:
-            self.v["_status"].set(f"Recovered {recovered.size} bits")
+            if expected is not None:
+                rep = compare_bits(recovered, expected)
+                lines.append(str(rep))
+                self.v["_status"].set(
+                    f"BER {rep.ber:.3e}" if rep.n_compared else "no comparison")
+            else:
+                self.v["_status"].set(f"Recovered {recovered.size} bits")
+            lines.append("")
+            lines.append(f"Recovered bits ({recovered.size}):")
+            lines.append("".join(str(int(b)) for b in recovered))
 
-        s = "".join(str(int(b)) for b in recovered)
-        lines.append("")
-        lines.append(f"Recovered bits ({recovered.size}):")
-        lines.append(s)
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", "\n".join(lines))
-
         self._draw_constellation(iq, params, recovered)
+
+    def _set_status_from_frame(self, rep):
+        if not rep.sync_found:
+            self.v["_status"].set(
+                f"NO SYNC (best distance {rep.sync_distance}/"
+                f"{rep.sync_pattern_bits})")
+            return
+        crc_part = ("CRC PASS" if rep.crc_ok
+                    else ("CRC FAIL" if rep.crc_scheme != "none" else "no CRC"))
+        ber_part = ""
+        if rep.n_payload_compared:
+            ber_part = (f", payload errors {rep.n_payload_errors}/"
+                        f"{rep.n_payload_compared}")
+        self.v["_status"].set(
+            f"sync@{rep.sync_offset} (dist {rep.sync_distance}); "
+            f"FEC corrections {rep.fec_corrections}; {crc_part}{ber_part}")
+
+    def _format_frame_diagnostics(self, rep, expected) -> list[str]:
+        """Format a FrameReport into the diagnostic text block."""
+        L: list[str] = []
+        L.append("=" * 60)
+        L.append("FRAME DIAGNOSTICS")
+        L.append("=" * 60)
+
+        # SYNC
+        L.append("[SYNC]")
+        L.append(f"  preamble offset (bit) : {rep.preamble_offset}")
+        L.append(f"  syncword offset (bit) : {rep.sync_offset}")
+        L.append(f"  hamming distance      : {rep.sync_distance}"
+                 f" / {rep.sync_pattern_bits}")
+        L.append(f"  result                : "
+                 f"{'FOUND' if rep.sync_found else 'NOT FOUND'}")
+        if not rep.sync_found:
+            if rep.notes:
+                L.append("  notes:")
+                for n in rep.notes:
+                    L.append(f"    - {n}")
+            return L
+
+        # HEADER
+        L.append("")
+        L.append("[HEADER]")
+        for k, v in rep.header_fields.items():
+            L.append(f"  {k:<22s}: {v}  (0x{v:X})")
+        if rep.header_bits is not None and rep.header_bits.size <= 128:
+            L.append(f"  raw bits              : "
+                     f"{''.join(str(int(b)) for b in rep.header_bits)}")
+
+        # FEC
+        L.append("")
+        L.append(f"[FEC: {rep.fec_scheme}]")
+        L.append(f"  codewords             : {rep.fec_codewords}")
+        L.append(f"  corrections           : {rep.fec_corrections}")
+        if rep.fec_corrected_positions:
+            head = rep.fec_corrected_positions[:32]
+            tail = "" if len(rep.fec_corrected_positions) <= 32 else \
+                   f" … (+{len(rep.fec_corrected_positions) - 32} more)"
+            L.append(f"  corrected positions   : "
+                     f"{', '.join(str(i) for i in head)}{tail}")
+
+        # CRC
+        L.append("")
+        L.append(f"[CRC: {rep.crc_scheme}]")
+        if rep.crc_scheme == "none":
+            L.append("  (no CRC configured)")
+        else:
+            L.append(f"  expected (from frame) : "
+                     f"0x{rep.crc_expected:0{(rep.crc_expected.bit_length()+3)//4 or 1}X}"
+                     if rep.crc_expected is not None else "  expected              : n/a")
+            L.append(f"  computed              : "
+                     f"0x{rep.crc_computed:0{(rep.crc_computed.bit_length()+3)//4 or 1}X}"
+                     if rep.crc_computed is not None else "  computed              : n/a")
+            L.append(f"  result                : "
+                     f"{'PASS' if rep.crc_ok else 'FAIL'}")
+
+        # PAYLOAD
+        L.append("")
+        L.append("[PAYLOAD]")
+        n = 0 if rep.payload_bits is None else rep.payload_bits.size
+        L.append(f"  declared length (bits): {rep.payload_length_declared}")
+        L.append(f"  recovered length      : {n}")
+        if rep.n_payload_compared:
+            ber = (rep.n_payload_errors / rep.n_payload_compared
+                   if rep.n_payload_compared else float("nan"))
+            L.append(f"  compared              : {rep.n_payload_compared} bits")
+            L.append(f"  bit errors            : {rep.n_payload_errors}")
+            L.append(f"  BER                   : {ber:.3e}")
+            # locate the first few error positions for diagnostics
+            if rep.n_payload_errors and rep.payload_bits is not None:
+                diff = (rep.payload_bits[:rep.n_payload_compared]
+                        != expected[:rep.n_payload_compared].astype("uint8"))
+                first = list(np.where(diff)[0][:16])
+                L.append(f"  first error positions : "
+                         f"{', '.join(str(i) for i in first)}")
+        elif expected is not None and not self.v["expected_is_payload"].get():
+            L.append("  (expected was compared against full demod bits; "
+                     "see 'recovered bits' below)")
+
+        if rep.payload_bits is not None:
+            L.append("")
+            L.append(f"  payload bits (first 256):")
+            preview = "".join(str(int(b)) for b in rep.payload_bits[:256])
+            suffix = "" if rep.payload_bits.size <= 256 else \
+                     f" … (+{rep.payload_bits.size - 256} more)"
+            L.append("  " + preview + suffix)
+
+        if rep.notes:
+            L.append("")
+            L.append("[NOTES]")
+            for n in rep.notes:
+                L.append(f"  - {n}")
+        return L
 
     def save_recovered(self):
         recovered = getattr(self, "_recovered", None)

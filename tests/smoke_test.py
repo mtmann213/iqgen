@@ -286,6 +286,95 @@ def run() -> int:
         failures.append(("nyquist guard", e))
         print(f"  FAIL  multi-freq nyquist guard: {e}")
 
+    # ---------------- Framing tests ----------------
+    print("\nFraming:")
+    from iqgen.framing import FrameConfig, build_frame, parse_frame
+    from iqgen.verifier import demodulate_frame
+
+    payload_seed = np.random.default_rng(99).integers(0, 2, 240, dtype=np.uint8)
+
+    # Bit-level round-trips (no modulator in the loop)
+    for fec in ("none", "repetition-3", "hamming-7-4"):
+        for crc in ("none", "crc16-ccitt-false", "crc32"):
+            label = f"frame-bitlevel {fec:<13s} + {crc:<18s}"
+            try:
+                fc = FrameConfig(fec=fec, crc=crc)
+                framed = build_frame(payload_seed, fc)
+                rep = parse_frame(framed, fc, expected_payload_bits=payload_seed)
+                assert rep.sync_found, "sync not found"
+                assert rep.crc_ok, "crc unexpectedly failed"
+                assert rep.n_payload_errors == 0, f"errors={rep.n_payload_errors}"
+                n_ok += 1
+                print(f"  OK    {label}  {rep.short_summary()}")
+            except Exception as e:
+                failures.append((label, e))
+                print(f"  FAIL  {label}: {e}")
+
+    # FEC-correctable single-bit error
+    try:
+        fc = FrameConfig(fec="hamming-7-4", crc="crc16-ccitt-false")
+        framed = build_frame(payload_seed, fc)
+        corrupted = framed.copy()
+        coded_start = 32 + 32  # past preamble+sync
+        corrupted[coded_start + 5] ^= 1  # flip a bit inside first Hamming codeword
+        rep = parse_frame(corrupted, fc, expected_payload_bits=payload_seed)
+        assert rep.fec_corrections >= 1
+        assert rep.crc_ok
+        assert rep.n_payload_errors == 0
+        print(f"  OK    hamming corrects 1-bit error  "
+              f"({rep.fec_corrections} corrections, CRC PASS, 0 payload errors)")
+        n_ok += 1
+    except Exception as e:
+        failures.append(("hamming 1-flip", e))
+        print(f"  FAIL  hamming 1-flip: {e}")
+
+    # FEC-uncorrectable; CRC catches the residual error
+    try:
+        fc = FrameConfig(fec="hamming-7-4", crc="crc16-ccitt-false")
+        framed = build_frame(payload_seed, fc)
+        corrupted = framed.copy()
+        coded_start = 32 + 32
+        corrupted[coded_start + 5] ^= 1
+        corrupted[coded_start + 6] ^= 1   # 2 errors in same codeword: Hamming miscorrects
+        rep = parse_frame(corrupted, fc, expected_payload_bits=payload_seed)
+        # The CRC should fail OR the payload should have errors — at minimum
+        # one of the two diagnostics must surface the problem.
+        assert (not rep.crc_ok) or rep.n_payload_errors > 0, \
+            "expected CRC fail or payload errors with 2-bit codeword damage"
+        print(f"  OK    hamming uncorrectable detected  "
+              f"(CRC={'OK' if rep.crc_ok else 'FAIL'}, "
+              f"payload errors={rep.n_payload_errors})")
+        n_ok += 1
+    except Exception as e:
+        failures.append(("hamming 2-flip", e))
+        print(f"  FAIL  hamming 2-flip: {e}")
+
+    # Modulated round-trip: QPSK + RRC + framed source + Hamming + CRC-16
+    try:
+        cfg = SignalConfig.from_dict({
+            **base_config(out_dir, "qpsk", "root_raised_cosine"),
+            "source": {
+                "type": "framed",
+                "payload": {"type": "random", "bit_count": 240, "seed": 11},
+                "framing": {"fec": "hamming-7-4", "crc": "crc16-ccitt-false"},
+            },
+        })
+        gen = IQGenerator(cfg)
+        signal = gen.generate()
+        expected = gen.source._last_payload
+        params = ReceiveParams(
+            modulation="qpsk", sample_rate=cfg.sample_rate, bitrate=cfg.bitrate,
+            filter_type="root_raised_cosine", span_symbols=cfg.span_symbols,
+            roll_off=cfg.roll_off, gray_coding=True, initial_phase=0.0)
+        _, rep = demodulate_frame(signal, params, FrameConfig(),
+                                   expected_payload_bits=expected)
+        assert rep.sync_found and rep.crc_ok and rep.n_payload_errors == 0
+        print(f"  OK    modulated framed round-trip (QPSK+RRC)  {rep.short_summary()}")
+        n_ok += 1
+    except Exception as e:
+        failures.append(("framed modulated round-trip", e))
+        print(f"  FAIL  framed modulated round-trip: {e}")
+
     print(f"\n{n_ok} passed, {len(failures)} failed")
     return 0 if not failures else 1
 
