@@ -24,10 +24,18 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from .config import BITS_PER_SYMBOL, VALID_FILTERS
-from .verifier import (ReceiveParams, compare_bits, demodulate, detect_format,
-                        find_sigmf_data_for_meta, load_iq, params_from_sigmf_meta,
-                        parse_bits)
+if __package__ in (None, ""):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from iqgen.config import BITS_PER_SYMBOL, VALID_FILTERS
+    from iqgen.verifier import (ReceiveParams, compare_bits, demodulate,
+                                detect_format, find_sigmf_data_for_meta,
+                                load_iq, params_from_sigmf_meta, parse_bits)
+else:
+    from .config import BITS_PER_SYMBOL, VALID_FILTERS
+    from .verifier import (ReceiveParams, compare_bits, demodulate,
+                            detect_format, find_sigmf_data_for_meta, load_iq,
+                            params_from_sigmf_meta, parse_bits)
 
 log = logging.getLogger(__name__)
 
