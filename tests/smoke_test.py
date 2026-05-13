@@ -349,6 +349,92 @@ def run() -> int:
         failures.append(("hamming 2-flip", e))
         print(f"  FAIL  hamming 2-flip: {e}")
 
+    # ---------------- Channel / interference tests ----------------
+    print("\nChannel / interference:")
+    from iqgen.channel import (add_awgn, add_tone, awgn, measure_power, mix,
+                                 tone)
+
+    # SNR accuracy: AWGN at known dB targets
+    try:
+        rng_ch = np.random.default_rng(11)
+        bpsk_like = (rng_ch.choice([-1, 1], 8000).astype(np.float32) + 0j
+                     ).astype(np.complex64)
+        for target in (20.0, 10.0, 0.0, -10.0):
+            mixed, mrep = add_awgn(bpsk_like, snr_db=target, rng=rng_ch)
+            noise_only = mixed - bpsk_like
+            measured = 10.0 * np.log10(
+                measure_power(bpsk_like) / measure_power(noise_only))
+            assert abs(measured - target) < 0.3, \
+                f"target {target} dB, measured {measured} dB"
+        print("  OK    AWGN SNR accuracy (±0.3 dB across +20, +10, 0, -10)")
+        n_ok += 1
+    except Exception as e:
+        failures.append(("awgn snr accuracy", e))
+        print(f"  FAIL  awgn snr accuracy: {e}")
+
+    # Tone SIR accuracy
+    try:
+        sig_test = (np.ones(4000, dtype=np.float32) + 0j).astype(np.complex64)
+        mixed, mrep = add_tone(sig_test, sir_db=6.0, freq_hz=2000.0,
+                                sample_rate=100000.0)
+        tone_only = mixed - sig_test
+        measured = 10.0 * np.log10(
+            measure_power(sig_test) / measure_power(tone_only))
+        assert abs(measured - 6.0) < 0.01
+        print(f"  OK    tone SIR accuracy ({measured:+.3f} dB vs target +6 dB)")
+        n_ok += 1
+    except Exception as e:
+        failures.append(("tone sir", e))
+        print(f"  FAIL  tone sir: {e}")
+
+    # Channel + framing degradation pattern: pick three SNR points and
+    # check that the diagnostics tell the expected story.
+    from iqgen.framing import FrameConfig as _FC
+    from iqgen.verifier import demodulate_frame as _df
+    try:
+        cfg_ch = SignalConfig.from_dict({
+            **base_config(out_dir, "qpsk", "root_raised_cosine"),
+            "source": {"type": "framed",
+                        "payload": {"type": "random", "bit_count": 4000,
+                                     "seed": 1},
+                        "framing": {}},
+        })
+        gen_ch = IQGenerator(cfg_ch)
+        sig_ch = gen_ch.generate()
+        exp_ch = gen_ch.source._last_payload
+        params_ch = ReceiveParams(
+            modulation="qpsk", sample_rate=cfg_ch.sample_rate,
+            bitrate=cfg_ch.bitrate, filter_type="root_raised_cosine",
+            span_symbols=cfg_ch.span_symbols, roll_off=cfg_ch.roll_off,
+            gray_coding=True)
+        fc_ch = _FC()
+        rng_w = np.random.default_rng(7)
+        # 1. High SNR: clean (sync 0, no FEC corrections, no errors)
+        mixed_hi, _ = add_awgn(sig_ch, snr_db=20.0, rng=rng_w)
+        _, rep_hi = _df(mixed_hi, params_ch, fc_ch, expected_payload_bits=exp_ch,
+                         max_sync_distance=16)
+        assert rep_hi.sync_found and rep_hi.crc_ok and rep_hi.n_payload_errors == 0
+        # 2. Moderate (~-5 dB): FEC engages but still clean
+        mixed_md, _ = add_awgn(sig_ch, snr_db=-5.0, rng=rng_w)
+        _, rep_md = _df(mixed_md, params_ch, fc_ch, expected_payload_bits=exp_ch,
+                         max_sync_distance=16)
+        assert rep_md.sync_found, "expected sync at -5 dB"
+        # 3. Severe (-14 dB): payload BER should be > 0 and CRC should fail
+        mixed_lo, _ = add_awgn(sig_ch, snr_db=-14.0, rng=rng_w)
+        _, rep_lo = _df(mixed_lo, params_ch, fc_ch, expected_payload_bits=exp_ch,
+                         max_sync_distance=24)
+        # We expect either CRC fail or non-zero payload errors at this SNR.
+        assert (not rep_lo.crc_ok) or rep_lo.n_payload_errors > 0, \
+            "expected detected damage at -14 dB"
+        print(f"  OK    AWGN+framing waterfall  "
+              f"(hi: CRC PASS, 0 err | md: sync OK, FEC corr {rep_md.fec_corrections}"
+              f" | lo: CRC {'PASS' if rep_lo.crc_ok else 'FAIL'}, "
+              f"errors={rep_lo.n_payload_errors})")
+        n_ok += 1
+    except Exception as e:
+        failures.append(("awgn+framing waterfall", e))
+        print(f"  FAIL  awgn+framing waterfall: {e}")
+
     # Modulated round-trip: QPSK + RRC + framed source + Hamming + CRC-16
     try:
         cfg = SignalConfig.from_dict({
