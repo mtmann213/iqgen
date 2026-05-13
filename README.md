@@ -208,6 +208,12 @@ FEC capacity: Hamming(7,4) corrects 1 bit per 7-bit codeword;
 repetition-3 corrects 1 bit per 3-bit codeword. Beyond that the FEC
 silently mis-corrects, and the CRC catches the residual error.
 
+**Sync requires a framed transmitter.** If you enable Framing in the
+verifier but the loaded IQ wasn't generated with `source.type: framed`,
+the syncword isn't in the bitstream and the parser reports
+`sync NOT FOUND` with a Hamming distance near `pattern/2` (random match
+level). The GUI prints a hint in `[SYNC]` when this happens.
+
 ### Channel / interferer (optional)
 
 The `channel` module mixes a clean iqgen recording with an interferer
@@ -219,10 +225,16 @@ at a target dB ratio:
   `tile` (repeat-to-fill), or `pad` (interfere only the overlap).
 
 The verifier GUI surfaces this as the **Interferer** section: enable
-it, pick the type, dial in the target SNR/SIR, and the constellation
-plot becomes a before/after pair. The diagnostic panel adds a
-`[CHANNEL]` block reporting target vs achieved dB and per-component
-powers.
+it, pick the type, dial in the target dB, and the constellation plot
+becomes a before/after pair. The diagnostic panel adds a `[CHANNEL]`
+block reporting target vs achieved dB and per-component powers.
+
+**dB convention.** `target_db > 0` means the signal is *stronger* than
+the interferer (clean recovery); `target_db < 0` means the interferer
+is stronger. Matched-filter processing gain (≈ 10·log10(sps), so ~10 dB
+at sps=10) hides the first ~10 dB of input SNR, so meaningful BER
+typically only appears below about `-5` dB. The GUI prints a reminder
+in the `[CHANNEL]` block when `target_db ≥ 0`.
 
 For sweeps, use `iqgen.evaluate`:
 

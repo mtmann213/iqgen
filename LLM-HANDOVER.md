@@ -232,6 +232,35 @@ lives in its own module so they can be swapped/extended:
     inspecting the actual generated payload (e.g. `gen.source._last_payload`
     on a FramedSource) for BER comparison. Before `generate()` it's None.
 
+12. **Channel dB convention is signal-relative.** `target_db > 0` means
+    the *signal* is stronger; `target_db < 0` means the interferer is
+    stronger. A user reading "60 dB SNR" and expecting errors is
+    backwards — that's clean. Matched-filter processing gain (~10 dB
+    at sps=10) further hides the first ~10 dB of input SNR, so for a
+    QPSK+RRC recording at sps=10, BER only starts climbing around
+    `-5 dB` input SNR. Don't "fix" this by renaming variables — the
+    convention matches every textbook. Just label the GUI clearly and
+    add a hint when target_db ≥ 0.
+
+13. **Tk swallows exceptions raised in Button command callbacks.**
+    Earlier we had a lazy `from .verifier import _downconvert` inside
+    `_extract_symbols`; when the GUI was launched as `python3
+    verifier_gui.py` (script mode, `__package__ == ""`), that relative
+    import raised, and Tk silently ate the traceback — the user saw
+    "no plot." Lesson: hoist all imports to module scope where the
+    top-level `if __package__ in (None, "")` fallback can handle
+    them, and wrap risky operations inside command callbacks in
+    `try/except` that pops a `messagebox.showerror` so failures are
+    visible.
+
+14. **Sync distance near `pattern_bits / 2` means non-framed input.**
+    The sliding-Hamming correlator's expected distance against random
+    bits is `pattern_bits / 2` (with `sqrt(pattern_bits)/2` stdev). If
+    the GUI reports "NOT FOUND" with distance ≈ 32/64, the IQ file
+    almost certainly wasn't generated with framing (or the
+    preamble/sync in the GUI don't match the TX). The GUI prints a
+    hint when this happens.
+
 ## Tests
 
 `tests/smoke_test.py` (175 cases):
